@@ -9,30 +9,17 @@
 #include <chrono>
 #include <FreeImage.h>
 
-
 #define iter_max 500
-#define smooth_color true
+#define smooth_color false
 
 using namespace std;
 
 typedef float2 Complex;
-// function
 
-static __device__ __host__ inline Complex ComplexMul(Complex a, Complex b) {
-	Complex c;
-	c.x = a.x * b.x - a.y * b.y;
-	c.y = a.x * b.y + a.y * b.x;
-	return c;
-}
-static __device__ __host__ inline Complex ComplexAdd(Complex a, Complex b) {
-	Complex c;
-	c.x = a.x + b.x;
-	c.y = a.y + b.y;
-	return c;
-}
-static __device__ __host__ inline float ComplexAbs(Complex a) {
-	return sqrt(a.x * a.x + a.y * a.y);
-}
+static __device__ __host__ inline Complex ComplexMul(Complex a, Complex b);
+static __device__ __host__ inline Complex ComplexAdd(Complex a, Complex b);
+static __device__ __host__ inline float ComplexAbs(Complex a);
+
 static __host__ __device__ inline Complex func(Complex z, Complex c) {
 	return ComplexAdd(ComplexMul(z, z), c);
 }
@@ -44,12 +31,6 @@ static __device__ __host__ inline Complex scale(int* scr, float* fr, Complex c) 
 	aux.y = c.y / (double)(scr[3] - scr[2]) * (fr[3] - fr[2]) + fr[2];
 	return aux;
 }
-/*
-* 	Complex aux(c.real() / (double)scr.width() * fr.width() + fr.x_min(),
-		c.imag() / (double)scr.height() * fr.height() + fr.y_min());
-	Complex aux(c.real() / (double)(scr[1] - scr[0]) * (fr[1] - fr[0]) + fr[0],
-		c.imag() / (double)(scr[3] - scr[2]) * (fr[3] - fr[2]) + fr[2]);
-*/
 
 // Check if a point is in the set or escapes to infinity, return the number if iterations
 static __device__ __host__ inline int escape(Complex c) {
@@ -61,11 +42,9 @@ static __device__ __host__ inline int escape(Complex c) {
 		z = func(z, c);
 		iter++;
 	}
-
 	return iter;
 }
  
-
 // Loop over each pixel from our image and check if the points associated with this pixel escape to infinity
 static __global__ void get_number_iterations(int* scr, float* fract, int* colors) {
 	int i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -122,7 +101,6 @@ static __global__ void set_plot_color(int* scr, int* colors, int* col) {
 		int k = (j - scr[0]) + (scr[1] - scr[0]) * (i - scr[2]);
 
 		int rgb[3];
-
 		int n = colors[k];
 		if (!smooth_color) {
 			get_rgb_piecewise_linear(n, rgb);
@@ -135,14 +113,11 @@ static __global__ void set_plot_color(int* scr, int* colors, int* col) {
 		col[3 * k + 1] = rgb[1];
 		col[3 * k + 2] = rgb[2];
 
-		
-
 	}
-	//FreeImage_SetPixelColor(bitmap, j, i, &col);
 
 }
 
-void plot(int* h_scr, int* h_colors, int* d_scr, int* d_colors, const char* fname) {
+void plot(int* h_scr, int* d_scr, int* d_colors, const char* fname) {
 	// active only for static linking
 #ifdef FREEIMAGE_LIB
 	FreeImage_Initialise();
@@ -151,15 +126,12 @@ void plot(int* h_scr, int* h_colors, int* d_scr, int* d_colors, const char* fnam
 	unsigned int width = h_scr[1] - h_scr[0], height = h_scr[3] - h_scr[2];
 	FIBITMAP* bitmap = FreeImage_Allocate(width, height, 32); // RGBA
 
-	
-	
+	// temp array to get colors of pixel
 	int* h_col;
-	checkCudaErrors(cudaMallocHost((void**)&h_col, (h_scr[1] - h_scr[0]) * (h_scr[3] - h_scr[2]) * 3 * sizeof(int)));
+	checkCudaErrors(cudaMallocHost((void**)&h_col, width * height * 3 * sizeof(int)));
 	int* d_col;
-	checkCudaErrors(cudaMalloc(reinterpret_cast<void**> (&d_col), (h_scr[1] - h_scr[0]) * (h_scr[3] - h_scr[2]) * 3 * sizeof(int)));
+	checkCudaErrors(cudaMalloc(reinterpret_cast<void**> (&d_col), width * height * 3 * sizeof(int)));
 
-	
-	//can i kernel bitmap ? 
 	//call kernel set_plot_color
 	dim3 threadsPerBlock(32, 32);
 	dim3 numBlocks(((h_scr[3] - h_scr[2]) + threadsPerBlock.x - 1) / threadsPerBlock.x,
@@ -167,7 +139,7 @@ void plot(int* h_scr, int* h_colors, int* d_scr, int* d_colors, const char* fnam
 
 	set_plot_color <<< numBlocks, threadsPerBlock >>> (d_scr, d_colors, d_col);
 
-	checkCudaErrors(cudaMemcpy(h_col, d_col, (h_scr[1] - h_scr[0]) * (h_scr[3] - h_scr[2]) * 3 * sizeof(int), cudaMemcpyDeviceToHost));
+	checkCudaErrors(cudaMemcpy(h_col, d_col, width * height * 3 * sizeof(int), cudaMemcpyDeviceToHost));
 
 	for (int i = h_scr[2]; i < h_scr[3]; ++i) {
 		for (int j = h_scr[0]; j < h_scr[1]; ++j) {
@@ -193,10 +165,13 @@ void plot(int* h_scr, int* h_colors, int* d_scr, int* d_colors, const char* fnam
 #ifdef FREEIMAGE_LIB
 	FreeImage_DeInitialise();
 #endif
+
+	checkCudaErrors(cudaFree(d_col));
+	checkCudaErrors(cudaFreeHost(h_col));
 }
 
 
-void fractal(int* h_scr, float *h_fract, int* h_colors, int* d_scr, float* d_fract, int* d_colors, const char* fname) {
+void fractal(int* h_scr, float *h_fract, int* d_scr, float* d_fract, int* d_colors, const char* fname) {
 	auto start = chrono::steady_clock::now();
 
 	//request as a kernel
@@ -208,10 +183,10 @@ void fractal(int* h_scr, float *h_fract, int* h_colors, int* d_scr, float* d_fra
 	checkCudaErrors(cudaDeviceSynchronize());
 
 	auto end = chrono::steady_clock::now();
-	std::cout << "Time to generate " << fname << " = " << chrono::duration <double, std::milli>(end - start).count() << " [ms]" << std::endl;
+	cout << "Time to generate " << fname << " = " << chrono::duration <double, std::milli>(end - start).count() << " [ms]" << endl;
 	
 	// Save (show) the result as an image
-	plot(h_scr, h_colors, d_scr, d_colors, fname);
+	plot(h_scr, d_scr, d_colors, fname);
 }
 
 
@@ -230,8 +205,6 @@ void mandelbrot() {
 	h_scr[0] = 0; h_scr[1] = 1200; h_scr[2] = 0; h_scr[3] = 1200;
 	h_fract[0] = -2.2; h_fract[1] = 1.2; h_fract[2] = -1.7; h_fract[3] = 1.7;
 
-	int* h_colors;
-	checkCudaErrors(cudaMallocHost((void**)&h_colors, (h_scr[1] - h_scr[0]) * (h_scr[3] - h_scr[2]) * sizeof(int)));
 	int* d_colors;
 	checkCudaErrors(cudaMalloc(&d_colors, (h_scr[1] - h_scr[0]) * (h_scr[3] - h_scr[2]) * sizeof(int)));
 
@@ -240,12 +213,13 @@ void mandelbrot() {
 
 	const char* fname = "mandelbrot.png";
 
-	//std::vector<int> colors(scr.size());
-	//cout << h_colors[123]<<"\n";
-	// Experimental zoom (bugs ?). This will modify the fract window (the domain in which we calculate the fractal function) 
-	//zoom(1.0, -1.225, -1.22, 0.15, 0.16, fract); //Z2
+	fractal(h_scr, h_fract, d_scr, d_fract, d_colors, fname);
 
-	fractal(h_scr, h_fract, h_colors, d_scr, d_fract, d_colors, fname);
+	checkCudaErrors(cudaFree(d_scr));
+	checkCudaErrors(cudaFree(d_fract));
+	checkCudaErrors(cudaFree(d_colors));
+	checkCudaErrors(cudaFreeHost(h_scr));
+	checkCudaErrors(cudaFreeHost(h_fract));
 }
 
 
@@ -254,5 +228,19 @@ int main()
 	mandelbrot();
 }
 
-
+static __device__ __host__ inline Complex ComplexMul(Complex a, Complex b) {
+	Complex c;
+	c.x = a.x * b.x - a.y * b.y;
+	c.y = a.x * b.y + a.y * b.x;
+	return c;
+}
+static __device__ __host__ inline Complex ComplexAdd(Complex a, Complex b) {
+	Complex c;
+	c.x = a.x + b.x;
+	c.y = a.y + b.y;
+	return c;
+}
+static __device__ __host__ inline float ComplexAbs(Complex a) {
+	return sqrt(a.x * a.x + a.y * a.y);
+}
 
